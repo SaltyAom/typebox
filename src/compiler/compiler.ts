@@ -256,14 +256,18 @@ export namespace TypeCompiler {
     const [parameter, accumulator] = [CreateParameter('value', 'any'), CreateParameter('acc', 'number')]
     if (IsNumber(schema.maxItems)) yield `${value}.length <= ${schema.maxItems}`
     if (IsNumber(schema.minItems)) yield `${value}.length >= ${schema.minItems}`
-    const elementExpression = CreateExpression(schema.items, references, 'value')
-    yield `${value}.every((${parameter}) => ${elementExpression})`
+    const elementExpression = CreateExpression(schema.items, references, 'value[i]')
+    yield `((${parameter}) => { for(let i = 0; i < ${parameter}.length; i++) {` +
+      `if(!${elementExpression}) return false` +
+      `} return true })(${value})`
     if (IsSchema(schema.contains) || IsNumber(schema.minContains) || IsNumber(schema.maxContains)) {
       const containsSchema = IsSchema(schema.contains) ? schema.contains : Never()
       const checkExpression = CreateExpression(containsSchema, references, 'value')
       const checkMinContains = IsNumber(schema.minContains) ? [`(count >= ${schema.minContains})`] : []
       const checkMaxContains = IsNumber(schema.maxContains) ? [`(count <= ${schema.maxContains})`] : []
-      const checkCount = `const count = value.reduce((${accumulator}, ${parameter}) => ${checkExpression} ? acc + 1 : acc, 0)`
+      const checkCount = `const count = ((items) => { let ${accumulator} = 0; for(const ${parameter} of items) {` +
+        `if(${checkExpression}) ${accumulator}++;` +
+        `} return ${accumulator} })(value)`
       const check = [`(count > 0)`, ...checkMinContains, ...checkMaxContains].join(' && ')
       yield `((${parameter}) => { ${checkCount}; return ${check}})(${value})`
     }
@@ -319,11 +323,15 @@ export namespace TypeCompiler {
     const check1 = schema.allOf.map((schema: TSchema) => CreateExpression(schema, references, value)).join(' && ')
     if (schema.unevaluatedProperties === false) {
       const keyCheck = CreateVariable(`${new RegExp(KeyOfPattern(schema))};`)
-      const check2 = `Object.getOwnPropertyNames(${value}).every(key => ${keyCheck}.test(key))`
+      const check2 = `((keys) => { for(let i = 0; i < keys.length; i++) { ` +
+        `if(!${keyCheck}.test(keys[i])) return false` +
+        `} return true })(Object.getOwnPropertyNames(${value}))`
       yield `(${check1} && ${check2})`
     } else if (IsSchema(schema.unevaluatedProperties)) {
       const keyCheck = CreateVariable(`${new RegExp(KeyOfPattern(schema))};`)
-      const check2 = `Object.getOwnPropertyNames(${value}).every(key => ${keyCheck}.test(key) || ${CreateExpression(schema.unevaluatedProperties, references, `${value}[key]`)})`
+      const check2 = `((keys) => { for(let i = 0; i < keys.length; i++) { ` +
+        `if(!(${keyCheck}.test(keys[i]) || ${CreateExpression(schema.unevaluatedProperties, references, `${value}[keys[i]]`)})) return false` +
+        `} return true })(Object.getOwnPropertyNames(${value}))`
       yield `(${check1} && ${check2})`
     } else {
       yield `(${check1})`
@@ -378,13 +386,17 @@ export namespace TypeCompiler {
         yield `Object.getOwnPropertyNames(${value}).length === ${knownKeys.length}`
       } else {
         const keys = `[${knownKeys.map((key) => `'${key}'`).join(', ')}]`
-        yield `Object.getOwnPropertyNames(${value}).every(key => ${keys}.includes(key))`
+        yield `((keys) => { for(let i = 0; i < keys.length; i++) { ` +
+          `if(!${keys}.includes(keys[i])) { return false }` +
+          `} return true })(Object.getOwnPropertyNames(${value}))`
       }
     }
     if (typeof schema.additionalProperties === 'object') {
-      const expression = CreateExpression(schema.additionalProperties, references, `${value}[key]`)
+      const expression = CreateExpression(schema.additionalProperties, references, `${value}[keys[i]]`)
       const keys = `[${knownKeys.map((key) => `'${key}'`).join(', ')}]`
-      yield `(Object.getOwnPropertyNames(${value}).every(key => ${keys}.includes(key) || ${expression}))`
+      yield `((keys) => { for(let i = 0; i < keys.length; i++) { ` +
+        `if(!(${keys}.includes(keys[i]) || ${expression})) return false` +
+        `} return true })(Object.getOwnPropertyNames(${value}))`
     }
   }
   function* FromPromise(schema: TPromise, references: TSchema[], value: string): IterableIterator<string> {
@@ -399,7 +411,9 @@ export namespace TypeCompiler {
     const check1 = CreateExpression(patternSchema, references, 'value')
     const check2 = IsSchema(schema.additionalProperties) ? CreateExpression(schema.additionalProperties, references, value) : schema.additionalProperties === false ? 'false' : 'true'
     const expression = `(${variable}.test(key) ? ${check1} : ${check2})`
-    yield `(Object.entries(${value}).every(([key, value]) => ${expression}))`
+    yield `((object) => { for(const key in object) {` +
+      `const value = object[key]; if (!${expression}) return false` +
+      `} return true })(${value})`
   }
   function* FromRef(schema: TRef, references: TSchema[], value: string): IterableIterator<string> {
     const target = Deref(schema, references)
